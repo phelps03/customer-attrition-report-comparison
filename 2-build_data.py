@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Build privacy-safe aggregate data.json from FieldRoutes All Time Customer List CSV."""
+import argparse, collections, csv, datetime, json
+
+def parse_date(s):
+    s=(s or '').strip().split(',')[0]
+    for f in ('%m/%d/%y','%m/%d/%Y','%Y-%m-%d'):
+        try:return datetime.datetime.strptime(s,f).date()
+        except ValueError:pass
+    return None
+
+def rep_name(s):
+    s=(s or '').strip()
+    if not s:return 'Unassigned'
+    if ',' in s:
+        a,b=[x.strip() for x in s.split(',',1)]; return (b+' '+a).strip()
+    return s
+
+def months_between(a,b): return (b.year-a.year)*12+b.month-a.month-(1 if b.day<a.day else 0)
+def bucket(m):
+    if m<3:return '0-3'
+    if m<6:return '3-6'
+    if m<9:return '6-9'
+    if m<12:return '9-12'
+    if m<18:return '12-18'
+    if m<24:return '18-24'
+    return '24+'
+
+def main():
+ ap=argparse.ArgumentParser();ap.add_argument('csv_path');ap.add_argument('out_path');ap.add_argument('--generated-at',required=True);a=ap.parse_args()
+ rows=bad_id=bad_date=status_conflicts=0; cohort={};status={}; repagg={}; rep_date_agg=collections.Counter(); rep_rows=0; rep_bad_date=0
+ with open(a.csv_path,newline='',encoding='utf-8-sig') as f:
+  for rec in csv.DictReader(f):
+   rows+=1;cid=(rec.get('Customer ID')or'').strip();d=parse_date(rec.get('Initial Service'));st=(rec.get('Customer Status')or'').strip().lower()
+   if not cid:bad_id+=1;continue
+   if not d:bad_date+=1;continue
+   if cid not in cohort or d<cohort[cid]:cohort[cid]=d
+   if cid in status and status[cid]!=st:status_conflicts+=1
+   status.setdefault(cid,st)
+   rep=rep_name(rec.get('Sold By')); rtype=(rec.get('Sold By Type')or'Unspecified').strip() or 'Unspecified'; can=parse_date(rec.get('Subscription Date Canceled'))
+   x=repagg.setdefault((rep,rtype),{'total':0,'active':0,'frozen':0,'unknown':0,**{k:0 for k in ['0-3','3-6','6-9','9-12','12-18','18-24','24+']}});x['total']+=1;rep_rows+=1
+   if can:
+    k=bucket(max(0,months_between(d,can))); x[k]+=1;x['frozen']+=1; state=k
+   elif st=='frozen':x['unknown']+=1;x['frozen']+=1; state='unknown'
+   else:x['active']+=1; state='active'
+   rep_date_agg[(d.isoformat(),rep,rtype,state)]+=1
+ agg=collections.Counter();active=frozen=other=0
+ for cid,dt in cohort.items():
+  st=status.get(cid,'')
+  if st=='active':flag=1;active+=1
+  elif st=='frozen':flag=0;frozen+=1
+  else:flag=0;other+=1
+  agg[(dt.isoformat(),flag)]+=1
+ records=[[dt,flag,n] for (dt,flag),n in sorted(agg.items())]
+ reps=[]
+ for (name,typ),x in repagg.items():
+  if name=='Unassigned':continue
+  reps.append({'name':name,'type':typ,**x})
+ reps.sort(key=lambda x:(-x['total'],x['name']))
+ out={'customerCount':len(cohort),'generatedAt':a.generated_at,'validation':{'reportRows':rows,'reportUniqueCustomers':len(cohort),'activeCustomers':active,'frozenCustomers':frozen,'otherStatusCustomers':other,'extraSubscriptionRows':rows-len(cohort)-bad_id-bad_date,'skippedBlankCustomerId':bad_id,'skippedBadInitialService':bad_date,'statusConflictsAcrossRows':status_conflicts,'repSubscriptionRows':sum(x['total'] for x in reps),'repCount':len(reps),'cohortRule':'Earliest Initial Service across all report rows per Customer ID','statusRule':'Customer Status from the report snapshot','repRule':'Subscription-row grain; Sold By attribution; cancellation tenure from Initial Service to Subscription Date Canceled'},'records':records,'reps':reps,'repRecords':[[dt,name,typ,state,n] for (dt,name,typ,state),n in sorted(rep_date_agg.items())]}
+ with open(a.out_path,'w') as f:json.dump(out,f,separators=(',',':'))
+ v=out['validation'];print(f"rows={rows} unique={len(cohort)} active={active} frozen={frozen} other={other}");print(f"rep_rows={v['repSubscriptionRows']} reps={v['repCount']} skipped_bad_initial={bad_date}");print(f"cohort range: {records[0][0]} .. {records[-1][0]}; aggregate rows: {len(records)}")
+if __name__=='__main__':main()
