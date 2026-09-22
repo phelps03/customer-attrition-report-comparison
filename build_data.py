@@ -28,7 +28,7 @@ def bucket(m):
 
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('csv_path');ap.add_argument('out_path');ap.add_argument('--generated-at',required=True);a=ap.parse_args()
- rows=bad_id=bad_date=status_conflicts=0; cohort={};status={}; repagg={}; rep_rows=0; rep_bad_date=0
+ rows=bad_id=bad_date=status_conflicts=0; cohort={};status={}; repagg={}; rep_date_agg=collections.Counter(); rep_rows=0; rep_bad_date=0
  with open(a.csv_path,newline='',encoding='utf-8-sig') as f:
   for rec in csv.DictReader(f):
    rows+=1;cid=(rec.get('Customer ID')or'').strip();d=parse_date(rec.get('Initial Service'));st=(rec.get('Customer Status')or'').strip().lower()
@@ -40,9 +40,10 @@ def main():
    rep=rep_name(rec.get('Sold By')); rtype=(rec.get('Sold By Type')or'Unspecified').strip() or 'Unspecified'; can=parse_date(rec.get('Subscription Date Canceled'))
    x=repagg.setdefault((rep,rtype),{'total':0,'active':0,'frozen':0,'unknown':0,**{k:0 for k in ['0-3','3-6','6-9','9-12','12-18','18-24','24+']}});x['total']+=1;rep_rows+=1
    if can:
-    x[bucket(max(0,months_between(d,can)))]+=1;x['frozen']+=1
-   elif st=='frozen':x['unknown']+=1;x['frozen']+=1
-   else:x['active']+=1
+    k=bucket(max(0,months_between(d,can))); x[k]+=1;x['frozen']+=1; state=k
+   elif st=='frozen':x['unknown']+=1;x['frozen']+=1; state='unknown'
+   else:x['active']+=1; state='active'
+   rep_date_agg[(d.isoformat(),rep,rtype,state)]+=1
  agg=collections.Counter();active=frozen=other=0
  for cid,dt in cohort.items():
   st=status.get(cid,'')
@@ -56,7 +57,7 @@ def main():
   if name=='Unassigned':continue
   reps.append({'name':name,'type':typ,**x})
  reps.sort(key=lambda x:(-x['total'],x['name']))
- out={'customerCount':len(cohort),'generatedAt':a.generated_at,'validation':{'reportRows':rows,'reportUniqueCustomers':len(cohort),'activeCustomers':active,'frozenCustomers':frozen,'otherStatusCustomers':other,'extraSubscriptionRows':rows-len(cohort)-bad_id-bad_date,'skippedBlankCustomerId':bad_id,'skippedBadInitialService':bad_date,'statusConflictsAcrossRows':status_conflicts,'repSubscriptionRows':sum(x['total'] for x in reps),'repCount':len(reps),'cohortRule':'Earliest Initial Service across all report rows per Customer ID','statusRule':'Customer Status from the report snapshot','repRule':'Subscription-row grain; Sold By attribution; cancellation tenure from Initial Service to Subscription Date Canceled'},'records':records,'reps':reps}
+ out={'customerCount':len(cohort),'generatedAt':a.generated_at,'validation':{'reportRows':rows,'reportUniqueCustomers':len(cohort),'activeCustomers':active,'frozenCustomers':frozen,'otherStatusCustomers':other,'extraSubscriptionRows':rows-len(cohort)-bad_id-bad_date,'skippedBlankCustomerId':bad_id,'skippedBadInitialService':bad_date,'statusConflictsAcrossRows':status_conflicts,'repSubscriptionRows':sum(x['total'] for x in reps),'repCount':len(reps),'cohortRule':'Earliest Initial Service across all report rows per Customer ID','statusRule':'Customer Status from the report snapshot','repRule':'Subscription-row grain; Sold By attribution; cancellation tenure from Initial Service to Subscription Date Canceled'},'records':records,'reps':reps,'repRecords':[[dt,name,typ,state,n] for (dt,name,typ,state),n in sorted(rep_date_agg.items())]}
  with open(a.out_path,'w') as f:json.dump(out,f,separators=(',',':'))
  v=out['validation'];print(f"rows={rows} unique={len(cohort)} active={active} frozen={frozen} other={other}");print(f"rep_rows={v['repSubscriptionRows']} reps={v['repCount']} skipped_bad_initial={bad_date}");print(f"cohort range: {records[0][0]} .. {records[-1][0]}; aggregate rows: {len(records)}")
 if __name__=='__main__':main()
