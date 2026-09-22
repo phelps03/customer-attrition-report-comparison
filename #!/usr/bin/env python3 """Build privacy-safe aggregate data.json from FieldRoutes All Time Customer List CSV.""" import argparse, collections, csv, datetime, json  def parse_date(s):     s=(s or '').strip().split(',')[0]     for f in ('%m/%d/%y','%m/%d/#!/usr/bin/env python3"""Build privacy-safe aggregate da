@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+)=>b#!/usr/bin/env python3
 """Build privacy-safe aggregate data.json from FieldRoutes All Time Customer List CSV."""
 import argparse, collections, csv, datetime, json
 
